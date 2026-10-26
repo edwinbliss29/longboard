@@ -9,7 +9,7 @@
 <body><div class="wrap"><header><div><h1>LONGBOARD</h1><small>ESP32-C6 • BLE CONTROL</small></div><span class="pill" id="status">DISCONNECTED</span></header>
 <div class="cards"><div class="card"><small>BATTERY</small><div class="metric" id="battery">--%</div></div><div class="card"><small>SPEED</small><div class="metric"><span id="speed">--</span> <small>km/h</small></div></div></div>
 <div class="section"><small>THROTTLE</small><div class="throttle" id="value">0%</div><div class="track" id="track" role="slider" aria-label="Throttle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"><div class="fill" id="fill"></div><div class="knob" id="knob"></div></div><div class="hint">Hold and slide up to request throttle.<br>Release to return to zero.</div></div>
-<button id="stop">STOP / ZERO THROTTLE</button><button id="connect">CONNECT ESP32-C6</button><div id="log" aria-live="polite">Waiting to connect.</div><p class="warning">BENCH TEST ONLY. Keep motor power stage disconnected. This button is not a hardware emergency stop. BLE disconnects, browser suspension and radio failures can delay commands; firmware must enforce a short command timeout and a separate physical shutdown.</p></div>
+<button id="stop">STOP / ZERO THROTTLE</button><button id="connect">CONNECT ESP32-C6</button><div id="log" aria-live="polite">Page v2 loaded. Waiting to connect.</div><p class="warning">BENCH TEST ONLY. Keep motor power stage disconnected. This button is not a hardware emergency stop. BLE disconnects, browser suspension and radio failures can delay commands; firmware must enforce a short command timeout and a separate physical shutdown.</p></div>
 <script>
 'use strict';
 const SERVICE='e7f10000-7b65-4d2e-9c4f-1a2b3c4d5e6f';
@@ -23,13 +23,13 @@ let throttle=0,pressed=false,lastTelemetry=0,writing=false,sendTimer=null;
 const el=id=>document.getElementById(id);
 function log(s){el('log').textContent=s}
 function setStatus(s){el('status').textContent=s}
-function isConnected(){return !!(device?.gatt?.connected&&commandChar)}
+function isConnected(){return !!(device&&device.gatt&&device.gatt.connected&&commandChar)}
 
 function setThrottle(v){
   throttle=Math.max(0,Math.min(100,Math.round(v)));
   el('value').textContent=throttle+'%';
   el('fill').style.height=throttle+'%';
-  el('knob').style.bottom=`calc(${throttle}% - ${throttle*.66}px + 5px)`;
+  el('knob').style.bottom='calc('+throttle+'% - '+(throttle*.66)+'px + 5px)';
   el('track').setAttribute('aria-valuenow',String(throttle));
 }
 
@@ -77,7 +77,8 @@ function disconnect(){
 }
 
 el('connect').addEventListener('click',async()=>{
-  if(device?.gatt?.connected){device.gatt.disconnect();return}
+  log('Connect tapped...');
+  if(device&&device.gatt&&device.gatt.connected){device.gatt.disconnect();return}
   if(!navigator.bluetooth){log('Web Bluetooth unavailable. Use Chrome on Android over HTTPS.');return}
   try{
     setStatus('CONNECTING');
@@ -85,6 +86,7 @@ el('connect').addEventListener('click',async()=>{
       filters:[{name:DEVICE_NAME}],
       optionalServices:[SERVICE]
     });
+    log('Device chosen, connecting...');
     device.addEventListener('gattserverdisconnected',disconnect);
     server=await device.gatt.connect();
     const service=await server.getPrimaryService(SERVICE);
@@ -126,3 +128,4 @@ setInterval(()=>{
     log('Telemetry stale (>2.5 s). Do not operate motor.');release();
   }
 },500);
+</script></body></html>
