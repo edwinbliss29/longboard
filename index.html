@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>LONGBOARD-C6</title>
+<style>
+:root{font-family:system-ui,Arial,sans-serif;color:#eaf2ff;background:#101827}*{box-sizing:border-box}body{margin:0}.wrap{max-width:520px;margin:auto;padding:24px 20px 40px}header{display:flex;justify-content:space-between;align-items:center}h1{font-size:26px;letter-spacing:2px;margin:0}small,.muted{color:#a2b2c7}.pill{border:1px solid #45546a;border-radius:20px;padding:7px 10px;font-size:12px}.cards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:24px 0}.card{background:#1c293b;padding:18px;border-radius:16px}.metric{font-size:32px;font-weight:750;margin-top:8px}.section{background:#1c293b;border-radius:22px;padding:22px;text-align:center}.throttle{font-size:36px;font-weight:750;margin:10px 0}.track{height:260px;width:84px;margin:18px auto;border-radius:50px;background:#0c1421;border:2px solid #4d5b71;position:relative;touch-action:none;overflow:hidden;cursor:pointer}.fill{position:absolute;bottom:0;left:0;right:0;height:0;background:linear-gradient(#56e7c0,#0d8d83)}.knob{position:absolute;bottom:5px;left:7px;width:66px;height:66px;border-radius:50%;background:#f0f6ff;box-shadow:0 3px 15px #0008;pointer-events:none}.hint{font-size:13px;color:#a2b2c7}button{width:100%;padding:16px;border-radius:14px;border:0;font-weight:750;font-size:16px;margin-top:14px;cursor:pointer}#stop{background:#ed4656;color:white}#connect{background:#4ac7bb;color:#0d2025}#connect:disabled{opacity:.5}#log{white-space:pre-wrap;font-size:12px;color:#9eb1c8;margin-top:18px;min-height:35px}.warning{font-size:12px;color:#eecf89;margin-top:14px;line-height:1.5}
+</style></head>
+<body><div class="wrap"><header><div><h1>LONGBOARD</h1><small>ESP32-C6 • BLE CONTROL</small></div><span class="pill" id="status">DISCONNECTED</span></header>
+<div class="cards"><div class="card"><small>BATTERY</small><div class="metric" id="battery">--%</div></div><div class="card"><small>SPEED</small><div class="metric"><span id="speed">--</span> <small>km/h</small></div></div></div>
+<div class="section"><small>THROTTLE</small><div class="throttle" id="value">0%</div><div class="track" id="track" role="slider" aria-label="Throttle" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0"><div class="fill" id="fill"></div><div class="knob" id="knob"></div></div><div class="hint">Hold and slide up to request throttle.<br>Release to return to zero.</div></div>
+<button id="stop">STOP / ZERO THROTTLE</button><button id="connect">CONNECT ESP32-C6</button><div id="log" aria-live="polite">Waiting to connect.</div><p class="warning">BENCH TEST ONLY. Keep motor power stage disconnected. This button is not a hardware emergency stop. BLE disconnects, browser suspension and radio failures can delay commands; firmware must enforce a short command timeout and a separate physical shutdown.</p></div>
+<script>
+'use strict';
+const SERVICE='e7f10000-7b65-4d2e-9c4f-1a2b3c4d5e6f';
+const COMMAND='e7f10001-7b65-4d2e-9c4f-1a2b3c4d5e6f';
+const TELEMETRY='e7f10002-7b65-4d2e-9c4f-1a2b3c4d5e6f';
+const DEVICE_NAME='Longboard-C6';   // must match firmware exactly
+const SEND_INTERVAL_MS=100;         // firmware timeout is 250 ms
+
+let device=null,server=null,commandChar=null,telemetryChar=null;
+let throttle=0,pressed=false,lastTelemetry=0,writing=false,sendTimer=null;
+const el=id=>document.getElementById(id);
+function log(s){el('log').textContent=s}
+function setStatus(s){el('status').textContent=s}
+function isConnected(){return !!(device?.gatt?.connected&&commandChar)}
+
+function setThrottle(v){
+  throttle=Math.max(0,Math.min(100,Math.round(v)));
+  el('value').textContent=throttle+'%';
+  el('fill').style.height=throttle+'%';
+  el('knob').style.bottom=`calc(${throttle}% - ${throttle*.66}px + 5px)`;
+  el('track').setAttribute('aria-valuenow',String(throttle));
+}
+
+// Firmware expects exactly ONE raw byte, 0..100 (not text).
+async function writeThrottle(value){
+  if(!commandChar)return;
+  while(writing)await new Promise(r=>setTimeout(r,5));
+  writing=true;
+  try{await commandChar.writeValueWithoutResponse(new Uint8Array([Math.max(0,Math.min(100,value))]))}
+  finally{writing=false}
+}
+
+function startSending(){
+  stopSending();
+  sendTimer=setInterval(()=>{
+    if(!pressed||!isConnected()||writing)return;
+    writeThrottle(throttle).catch(e=>log('Write failed: '+e.message));
+  },SEND_INTERVAL_MS);
+}
+function stopSending(){if(sendTimer){clearInterval(sendTimer);sendTimer=null}}
+
+async function sendZero(){
+  pressed=false;stopSending();setThrottle(0);
+  if(!isConnected()){log('Throttle at 0%.');return}
+  try{await writeThrottle(0);await writeThrottle(0);log('Zero throttle sent.')}
+  catch(e){log('Zero command failed: '+e.message)}
+}
+
+function onTelemetry(event){
+  try{
+    const text=new TextDecoder().decode(event.target.value);
+    const obj=JSON.parse(text);
+    lastTelemetry=Date.now();
+    if(typeof obj.battery==='number')el('battery').textContent=obj.battery+'%';
+    if(typeof obj.speed==='number')el('speed').textContent=obj.speed;
+    log('Telemetry: '+text);
+  }catch(e){log('Telemetry parse error: '+e.message)}
+}
+
+function disconnect(){
+  pressed=false;stopSending();setThrottle(0);
+  commandChar=null;telemetryChar=null;server=null;lastTelemetry=0;
+  setStatus('DISCONNECTED');el('connect').textContent='CONNECT ESP32-C6';
+  log('BLE disconnected. Throttle UI reset to zero.');
+}
+
+el('connect').addEventListener('click',async()=>{
+  if(device?.gatt?.connected){device.gatt.disconnect();return}
+  if(!navigator.bluetooth){log('Web Bluetooth unavailable. Use Chrome on Android over HTTPS.');return}
+  try{
+    setStatus('CONNECTING');
+    device=await navigator.bluetooth.requestDevice({
+      filters:[{name:DEVICE_NAME}],
+      optionalServices:[SERVICE]
+    });
+    device.addEventListener('gattserverdisconnected',disconnect);
+    server=await device.gatt.connect();
+    const service=await server.getPrimaryService(SERVICE);
+    commandChar=await service.getCharacteristic(COMMAND);
+    telemetryChar=await service.getCharacteristic(TELEMETRY);
+    telemetryChar.addEventListener('characteristicvaluechanged',onTelemetry);
+    await telemetryChar.startNotifications();
+    setStatus('CONNECTED');el('connect').textContent='DISCONNECT';
+    await writeThrottle(0);
+    log('Connected. Telemetry subscribed. Throttle writes enabled.');
+  }catch(e){log('Connection error: '+e.message);setStatus('DISCONNECTED')}
+});
+
+el('stop').addEventListener('click',sendZero);
+
+function updatePointer(e){
+  const rect=el('track').getBoundingClientRect();
+  setThrottle((rect.bottom-e.clientY)/rect.height*100);
+}
+el('track').addEventListener('pointerdown',e=>{
+  if(!isConnected()){log('Connect first.');return}
+  pressed=true;el('track').setPointerCapture(e.pointerId);
+  updatePointer(e);startSending();
+  writeThrottle(throttle).catch(err=>log('Write failed: '+err.message));
+});
+el('track').addEventListener('pointermove',e=>{if(pressed)updatePointer(e)});
+function release(){if(pressed)sendZero()}
+el('track').addEventListener('pointerup',release);
+el('track').addEventListener('pointercancel',release);
+window.addEventListener('blur',release);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)release()});
+el('track').addEventListener('keydown',e=>{
+  if(['ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();log('Keyboard throttle disabled.')}
+});
+
+// Stale telemetry watchdog
+setInterval(()=>{
+  if(isConnected()&&lastTelemetry&&Date.now()-lastTelemetry>2500){
+    log('Telemetry stale (>2.5 s). Do not operate motor.');release();
+  }
+},500);
